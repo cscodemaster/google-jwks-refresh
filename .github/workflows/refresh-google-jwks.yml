@@ -1,0 +1,64 @@
+name: Refresh Google JWKS
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why the backend requested a refresh
+        required: false
+        default: manual
+      kid:
+        description: Token key id that was requested
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: google-jwks-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Fetch and validate Google JWKS
+        run: |
+          mkdir -p jwks
+          python - <<'PY'
+          import json
+          import urllib.request
+
+          url = "https://www.googleapis.com/oauth2/v3/certs"
+          request = urllib.request.Request(url, headers={"Accept": "application/json"})
+          with urllib.request.urlopen(request, timeout=20) as response:
+              data = json.load(response)
+
+          keys = data.get("keys")
+          if not isinstance(keys, list) or not keys:
+              raise SystemExit("Google JWKS response did not contain keys")
+
+          for key in keys:
+              if key.get("kty") != "RSA" or key.get("alg") != "RS256" or not key.get("kid"):
+                  raise SystemExit(f"Unexpected Google JWKS key shape: {key!r}")
+
+          with open("jwks/google-jwks.json", "w", encoding="utf-8") as handle:
+              json.dump(data, handle, indent=2, sort_keys=True)
+              handle.write("\n")
+          PY
+
+      - name: Commit refreshed JWKS
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add jwks/google-jwks.json
+          if git diff --cached --quiet; then
+            echo "Google JWKS is unchanged."
+          else
+            git commit -m "Refresh Google JWKS"
+            git push
+          fi
